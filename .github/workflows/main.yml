@@ -1,0 +1,64 @@
+name: macOS-RDP-Pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos-access:
+    runs-on: macos-14
+    timeout-minutes: 3600
+
+    steps:
+      - name: Create-User
+        run: |
+          USERNAME="rdpuser"
+          PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+=' </dev/urandom | head -c 16)
+
+          echo "Creating local user..."
+
+          sudo sysadminctl -addUser "$USERNAME" -password "$PASSWORD" -admin
+
+          echo "FINAL_PASS=$PASSWORD" >> $GITHUB_ENV
+
+      - name: Enable-SSH
+        run: |
+          echo "Enabling SSH..."
+
+          sudo systemsetup -setremotelogin on
+
+          sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist || true
+
+      - name: Install-Tailscale
+        run: |
+          brew install --cask tailscale
+
+          echo "Waiting for Tailscale..."
+          sleep 5
+
+          sudo tailscaled >/tmp/tailscaled.log 2>&1 &
+
+          sleep 5
+
+          AUTH="${{ secrets.TAILSCALE_AUTH_KEY }}"
+          HOSTNAME="mac-$(jot -r 1 1000 9999)"
+
+          sudo tailscale up --authkey="$AUTH" --hostname="$HOSTNAME"
+
+          IP=$(tailscale ip -4 | head -n1)
+
+          echo "TS_IP=$IP" >> $GITHUB_ENV
+
+      - name: Show-Connection-Info
+        run: |
+          echo "===================================="
+          echo "macOS SSH Server Online"
+          echo "IP: $TS_IP"
+          echo "Username: rdpuser"
+          echo "Password: $FINAL_PASS"
+          echo "===================================="
+
+      - name: Keep-Runner-Alive
+        run: |
+          while true; do
+            sleep 5
+          done
