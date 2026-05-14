@@ -5,7 +5,7 @@ on:
 
 jobs:
   macos-access:
-    runs-on: macos-26-xlarge
+    runs-on: macos-26-intel
     timeout-minutes: 3600
 
     steps:
