@@ -24,13 +24,13 @@ jobs:
           $p = -join ($raw | Sort-Object { Get-Random })
           $sp = ConvertTo-SecureString $p -AsPlainText -Force
 
-          New-LocalUser -Name "RDPUser" -Password $sp -AccountNeverExpires
+          New-LocalUser -Name "Admin" -Password $sp -AccountNeverExpires
 
           $g = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("QWRtaW5pc3RyYXRvcnM="))
-          Add-LocalGroupMember -Group $g -Member "RDPUser"
+          Add-LocalGroupMember -Group $g -Member "Admin"
 
           # Pre-create profile
-          $user = "RDPUser"
+          $user = "Admin"
           $pass = $p
 
           Write-Host "Creating user profile..."
