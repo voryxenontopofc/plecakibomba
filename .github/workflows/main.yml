@@ -1,0 +1,49 @@
+name: SSH via Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ssh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Connect to Tailscale
+        run: |
+          sudo tailscale up \
+            --auth-key="${{ secrets.TAILSCALE_AUTH_KEY }}" \
+            --hostname="github-${{ github.run_id }}"
+
+      - name: Generate SSH key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+          chmod 700 ~/.ssh
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Show public key
+        run: |
+          echo "========================================"
+          echo "Add this key to ~/.ssh/authorized_keys on your server:"
+          cat ~/.ssh/id_ed25519.pub
+          echo "========================================"
+
+      - name: Wait for authorization
+        run: |
+          echo "Waiting 300 seconds so you can add the key..."
+          sleep 10
+
+      - name: Test SSH
+        env:
+          HOST: ${{ secrets.TAILSCALE_HOST }}
+          USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh-keyscan "$HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            "$USER@$HOST" \
+            "hostname && whoami && uname -a"
