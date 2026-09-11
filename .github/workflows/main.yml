@@ -1,0 +1,44 @@
+      - name: Setup-VNC-and-noVNC
+        run: |
+          # mac's built-in VNC server
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on -restart -agent -privs -all
+          sudo defaults write /Library/Preferences/com.apple.RemoteManagement.plist VNCOnlyLocalConnections -bool false
+
+          # set VNC password (separate from the user password)
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvnclegacy -vnclegacy yes
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvncpw -vncpw "$FINAL_PASS"
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -restart -agent
+
+          brew install websockify
+          brew install novnc 2>/dev/null || true
+
+          # pull noVNC web assets
+          git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/novnc
+
+          # bridge: websocket 6080 -> VNC 5900, serve noVNC from /tmp/novnc
+          nohup websockify --web /tmp/novnc 6080 localhost:5900 > /tmp/ws.log 2>&1 &
+          sleep 3
+          curl -sI http://localhost:6080/vnc.html | head -n1
+
+      - name: Start-quick-tunnel
+        run: |
+          nohup cloudflared tunnel --no-autoupdate --url http://localhost:6080 > /tmp/cf.log 2>&1 &
+
+          for i in $(seq 1 30); do
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -n1)
+            if [ -n "$URL" ]; then break; fi
+            sleep 2
+          done
+
+          echo "VNC URL: $URL/vnc.html"
+          echo "VNC password: $FINAL_PASS"
+          echo "VNC_URL=$URL" >> $GITHUB_ENV
+
+          while true; do
+            if [ -f "$HOME/stop_rdp.txt" ]; then break; fi
+            sleep 5
+          done
