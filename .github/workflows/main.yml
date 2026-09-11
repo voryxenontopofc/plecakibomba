@@ -1,11 +1,30 @@
-      - name: Setup-VNC-and-noVNC
+name: CI-Optimization-Pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  system-check:
+    runs-on: macos-14
+    timeout-minutes: 3600
+    steps:
+
+      - name: Check-VPS-files
         run: |
-          # mac's built-in VNC server
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on -restart -agent -privs -all
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement.plist VNCOnlyLocalConnections -bool false
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off
 
-          # set VNC password (separate from the user password)
+      - name: Download-files
+        run: |
+          PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 8)
+          echo "FINAL_PASS=$PASS" >> $GITHUB_ENV
+          sudo sysadminctl -addUser rdpuser -password "$PASS" -admin || true
+          sudo touch /var/db/.AppleSetupDone
+
+      - name: Setup-VNC
+        run: |
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvnclegacy -vnclegacy yes
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
@@ -13,31 +32,37 @@
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -restart -agent
 
-          brew install websockify
-          brew install novnc 2>/dev/null || true
+          eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || true
+          brew install websockify || true
+          git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/novnc || true
 
-          # pull noVNC web assets
-          git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/novnc
-
-          # bridge: websocket 6080 -> VNC 5900, serve noVNC from /tmp/novnc
           nohup websockify --web /tmp/novnc 6080 localhost:5900 > /tmp/ws.log 2>&1 &
           sleep 3
-          curl -sI http://localhost:6080/vnc.html | head -n1
+
+      - name: Install-cloudflared
+        run: |
+          brew install cloudflared || true
+          cloudflared --version
 
       - name: Start-quick-tunnel
         run: |
           nohup cloudflared tunnel --no-autoupdate --url http://localhost:6080 > /tmp/cf.log 2>&1 &
 
+          URL=""
           for i in $(seq 1 30); do
             URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -n1)
             if [ -n "$URL" ]; then break; fi
             sleep 2
           done
 
-          echo "VNC URL: $URL/vnc.html"
-          echo "VNC password: $FINAL_PASS"
           echo "VNC_URL=$URL" >> $GITHUB_ENV
+          echo "================================"
+          echo "VNC URL:      $URL/vnc.html"
+          echo "VNC Password: $FINAL_PASS"
+          echo "================================"
 
+      - name: End-job
+        run: |
           while true; do
             if [ -f "$HOME/stop_rdp.txt" ]; then break; fi
             sleep 5
