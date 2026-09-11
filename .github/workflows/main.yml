@@ -14,14 +14,35 @@ jobs:
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on -restart -agent -privs -all
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement.plist VNCOnlyLocalConnections -bool false
-          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off || true
 
       - name: Download-files
         run: |
           PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 8)
           echo "FINAL_PASS=$PASS" >> $GITHUB_ENV
-          sudo sysadminctl -addUser rdpuser -password "$PASS" -admin || true
+
+          sudo dscl . -create /Users/rdpuser
+          sudo dscl . -create /Users/rdpuser UserShell /bin/bash
+          sudo dscl . -create /Users/rdpuser RealName "rdpuser"
+          sudo dscl . -create /Users/rdpuser UniqueID 1001
+          sudo dscl . -create /Users/rdpuser PrimaryGroupID 80
+          sudo dscl . -create /Users/rdpuser NFSHomeDirectory /Users/rdpuser
+          sudo dscl . -passwd /Users/rdpuser "$PASS"
+          sudo dscl . -append /Groups/admin GroupMembership rdpuser
+
+          sudo mkdir -p /Users/rdpuser
+          sudo chown rdpuser:staff /Users/rdpuser
+          sudo chmod 755 /Users/rdpuser
+
           sudo touch /var/db/.AppleSetupDone
+          echo "user created: rdpuser"
+
+      - name: Bind-session
+        run: |
+          sudo launchctl kickstart -k system/com.apple.loginwindow || true
+          sleep 2
+          sudo -u rdpuser launchctl asuser $(id -u rdpuser) open -a Finder || true
+          sleep 2
 
       - name: Setup-VNC
         run: |
@@ -38,9 +59,11 @@ jobs:
 
           nohup websockify --web /tmp/novnc 6080 localhost:5900 > /tmp/ws.log 2>&1 &
           sleep 3
+          curl -sI http://localhost:6080/vnc.html | head -n1 || true
 
       - name: Install-cloudflared
         run: |
+          eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || true
           brew install cloudflared || true
           cloudflared --version
 
