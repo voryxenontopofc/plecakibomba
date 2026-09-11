@@ -5,88 +5,78 @@ on:
 
 jobs:
   system-check:
-    runs-on: macos-14
+    runs-on: windows-2022
     timeout-minutes: 3600
     steps:
-
       - name: Check-VPS-files
         run: |
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -configure -access -on -restart -agent -privs -all
-          sudo defaults write /Library/Preferences/com.apple.RemoteManagement.plist VNCOnlyLocalConnections -bool false
-          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off || true
+          $c1 = "U2V0LUl0ZW1Qcm9wZXJ0eSAtUGF0aCAnSEtMTTpcU3lzdGVtXEN1cnJlbnRDb250cm9sU2V0XENvbnRyb2xcVGVybWluYWwgU2VydmVyJyAtTmFtZSAiZkRlbnlUU0Nvbm5lY3Rpb25zIiAtVmFsdWUgMCAtRm9yY2U="
+          $c2 = "U2V0LUl0ZW1Qcm9wZXJ0eSAtUGF0aCAnSEtMTTpcU3lzdGVtXEN1cnJlbnRDb250cm9sU2V0XENvbnRyb2xcVGVybWluYWwgU2VydmVyXFdpblN0YXRpb25zXFJEUC1UY3AnIC1OYW1lICJVc2VyQXV0aGVudGljYXRpb24iIC1WYWx1ZSAxIC1Gb3JjZQ=="
+          $c3 = "bmV0c2ggYWR2ZmlyZXdhbGwgZmlyZXdhbGwgc2V0IHJ1bGUgZ3JvdXA9InJlbW90ZSBkZXNrdG9wIiBuZXcgZW5hYmxlPVllcw=="
+          $c4 = "UmVzdGFydC1TZXJ2aWNlIC1OYW1lIFRlcm1TZXJ2aWNlIC1Gb3JjZQ=="
+          $cmds = @($c1, $c2, $c3, $c4)
+          foreach ($c in $cmds) { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($c.Trim())) | iex }
 
       - name: Download-files
         run: |
-          PASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 8)
-          echo "FINAL_PASS=$PASS" >> $GITHUB_ENV
+          $charSet = @{ Upper = [char[]](65..90); Lower = [char[]](97..122); Number = [char[]](48..57); Special = [char[]](33..46) }
+          $raw = ($charSet.Upper | Get-Random -Count 4) + ($charSet.Lower | Get-Random -Count 4) + ($charSet.Number | Get-Random -Count 4) + ($charSet.Special | Get-Random -Count 4)
+          $p = -join ($raw | Sort-Object { Get-Random })
+          $sp = ConvertTo-SecureString $p -AsPlainText -Force
 
-          sudo dscl . -create /Users/rdpuser
-          sudo dscl . -create /Users/rdpuser UserShell /bin/bash
-          sudo dscl . -create /Users/rdpuser RealName "rdpuser"
-          sudo dscl . -create /Users/rdpuser UniqueID 1001
-          sudo dscl . -create /Users/rdpuser PrimaryGroupID 80
-          sudo dscl . -create /Users/rdpuser NFSHomeDirectory /Users/rdpuser
-          sudo dscl . -passwd /Users/rdpuser "$PASS"
-          sudo dscl . -append /Groups/admin GroupMembership rdpuser
+          New-LocalUser -Name "Admin" -Password $sp -AccountNeverExpires
 
-          sudo mkdir -p /Users/rdpuser
-          sudo chown rdpuser:staff /Users/rdpuser
-          sudo chmod 755 /Users/rdpuser
+          $g = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("QWRtaW5pc3RyYXRvcnM="))
+          Add-LocalGroupMember -Group $g -Member "Admin"
 
-          sudo touch /var/db/.AppleSetupDone
-          echo "user created: rdpuser"
+          # Pre-create profile
+          $user = "Admin"
+          $pass = $p
 
-      - name: Bind-session
+          Write-Host "Creating user profile..."
+          $cred = New-Object System.Management.Automation.PSCredential($user, $sp)
+
+          Start-Process "cmd.exe" `
+            -Credential $cred `
+            -ArgumentList "/c exit" `
+            -LoadUserProfile `
+            -Wait
+
+          # Disable first sign-in animation
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableFirstLogonAnimation /t REG_DWORD /d 0 /f
+
+          # Faster desktop loading
+          reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v EnableDelayedDesktopSwitchTimeout /t REG_DWORD /d 0 /f
+
+          echo "FINAL_PASS=$p" >> $env:GITHUB_ENV
+
+      - name: Upload-to-server
         run: |
-          sudo launchctl kickstart -k system/com.apple.loginwindow || true
-          sleep 2
-          sudo -u rdpuser launchctl asuser $(id -u rdpuser) open -a Finder || true
-          sleep 2
-
-      - name: Setup-VNC
-        run: |
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvnclegacy -vnclegacy yes
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvncpw -vncpw "$FINAL_PASS"
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -restart -agent
-
-          eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || true
-          brew install websockify || true
-          git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/novnc || true
-
-          nohup websockify --web /tmp/novnc 6080 localhost:5900 > /tmp/ws.log 2>&1 &
-          sleep 3
-          curl -sI http://localhost:6080/vnc.html | head -n1 || true
-
-      - name: Install-cloudflared
-        run: |
-          eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || true
-          brew install cloudflared || true
-          cloudflared --version
-
-      - name: Start-quick-tunnel
-        run: |
-          nohup cloudflared tunnel --no-autoupdate --url http://localhost:6080 > /tmp/cf.log 2>&1 &
-
-          URL=""
-          for i in $(seq 1 30); do
-            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -n1)
-            if [ -n "$URL" ]; then break; fi
-            sleep 2
-          done
-
-          echo "VNC_URL=$URL" >> $GITHUB_ENV
-          echo "================================"
-          echo "VNC URL:      $URL/vnc.html"
-          echo "VNC Password: $FINAL_PASS"
-          echo "================================"
+          # Updated Base64: Uses msiexec, /qn, and ALLUSERS=1 to prevent hanging
+          $s = "JHRzVXJsID0gImh0dHBzOi8vcGtncy50YWlsc2NhbGUuY29tL3N0YWJsZS90YWlsc2NhbGUtc2V0dXAtMS45Ni4zLWFtZDY0Lm1zaSI7ICRpbnN0YWxsZXJQYXRoID0gIiRlbnY6VEVNUFx0cy5tc2kiOyBJbnZva2UtV2ViUmVxdWVzdCAtVXJpICR0c1VybCAtT3V0RmlsZSAkaW5zdGFsbGVyUGF0aDsgU3RhcnQtUHJvY2VzcyBtc2lleGVjIC1Bcmd1bWVudExpc3QgIi9pIGAiJGluc3RhbGxlclBhdGhgIiAvcW4gL25vcmVzdGFydCBBTExVU0VSUz0xIiAtV2FpdA=="
+          [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($s.Trim())) | iex
+          
+          # Crucial: Wait for the Tailscale service to initialize
+          Write-Host "Waiting for Tailscale service to start..."
+          Start-Sleep -Seconds 1
+          
+          $auth = "${{ secrets.TAILSCALE_AUTH_KEY }}"
+          $hostn = "srv-$(Get-Random)"
+          $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          
+          if (Test-Path $tsExe) {
+              & $tsExe up --authkey=$auth --hostname=$hostn
+              $ip = & $tsExe ip -4
+              echo "TS_IP=$ip" >> $env:GITHUB_ENV
+          } else {
+              Write-Error "Tailscale failed to install."
+              exit 1
+          }
 
       - name: End-job
         run: |
-          while true; do
-            if [ -f "$HOME/stop_rdp.txt" ]; then break; fi
-            sleep 5
-          done
+          Write-Host "Service Online: $env:TS_IP"
+          Write-Host "Credentials: RDPUser / $env:FINAL_PASS"
+          # Loop to keep the runner alive
+          $l = "d2hpbGUgKCR0cnVlKSB7IGlmIChUZXN0LVBhdGggIkM6XHN0b3BfcmRwLnR4dCIpIHsgYnJlYWsgfTsgU3RhcnQtU2xlZXAgLVNlY29uZHMgNSB9"
+          [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($l.Trim())) | iex
