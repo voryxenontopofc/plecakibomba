@@ -7,76 +7,134 @@ jobs:
   system-check:
     runs-on: windows-2022
     timeout-minutes: 3600
+
+    env:
+      ADMIN_USER: "Admin"
+
     steps:
-      - name: Check-VPS-files
+      - name: Configure-RDP
+        shell: pwsh
         run: |
-          $c1 = "U2V0LUl0ZW1Qcm9wZXJ0eSAtUGF0aCAnSEtMTTpcU3lzdGVtXEN1cnJlbnRDb250cm9sU2V0XENvbnRyb2xcVGVybWluYWwgU2VydmVyJyAtTmFtZSAiZkRlbnlUU0Nvbm5lY3Rpb25zIiAtVmFsdWUgMCAtRm9yY2U="
-          $c2 = "U2V0LUl0ZW1Qcm9wZXJ0eSAtUGF0aCAnSEtMTTpcU3lzdGVtXEN1cnJlbnRDb250cm9sU2V0XENvbnRyb2xcVGVybWluYWwgU2VydmVyXFdpblN0YXRpb25zXFJEUC1UY3AnIC1OYW1lICJVc2VyQXV0aGVudGljYXRpb24iIC1WYWx1ZSAxIC1Gb3JjZQ=="
-          $c3 = "bmV0c2ggYWR2ZmlyZXdhbGwgZmlyZXdhbGwgc2V0IHJ1bGUgZ3JvdXA9InJlbW90ZSBkZXNrdG9wIiBuZXcgZW5hYmxlPVllcw=="
-          $c4 = "UmVzdGFydC1TZXJ2aWNlIC1OYW1lIFRlcm1TZXJ2aWNlIC1Gb3JjZQ=="
-          $cmds = @($c1, $c2, $c3, $c4)
-          foreach ($c in $cmds) { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($c.Trim())) | iex }
+          $ErrorActionPreference = 'Stop'
 
-      - name: Download-files
+          # Apply registry tweaks directly (no .reg file, no heredoc)
+          $tsKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+          $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          $polKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+          $logKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+
+          Set-ItemProperty -Path $tsKey  -Name 'fDenyTSConnections' -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $rdpKey -Name 'UserAuthentication' -Value 1 -Type DWord -Force
+          Set-ItemProperty -Path $polKey -Name 'EnableFirstLogonAnimation' -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $logKey -Name 'EnableDelayedDesktopSwitchTimeout' -Value 0 -Type DWord -Force
+
+          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes | Out-Null
+          Restart-Service -Name TermService -Force
+
+      - name: Create-Admin-User
+        shell: pwsh
         run: |
-          $charSet = @{ Upper = [char[]](65..90); Lower = [char[]](97..122); Number = [char[]](48..57); Special = [char[]](33..46) }
-          $raw = ($charSet.Upper | Get-Random -Count 4) + ($charSet.Lower | Get-Random -Count 4) + ($charSet.Number | Get-Random -Count 4) + ($charSet.Special | Get-Random -Count 4)
-          $p = -join ($raw | Sort-Object { Get-Random })
-          $sp = ConvertTo-SecureString $p -AsPlainText -Force
+          $ErrorActionPreference = 'Stop'
 
-          New-LocalUser -Name "Admin" -Password $sp -AccountNeverExpires
+          $charSet = @{
+            Upper   = [char[]](65..90)
+            Lower   = [char[]](97..122)
+            Number  = [char[]](48..57)
+            Special = [char[]](33..46)
+          }
+          $raw = ($charSet.Upper | Get-Random -Count 4) +
+                 ($charSet.Lower | Get-Random -Count 4) +
+                 ($charSet.Number | Get-Random -Count 4) +
+                 ($charSet.Special | Get-Random -Count 4)
+          $password = -join ($raw | Sort-Object { Get-Random })
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
 
-          $g = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("QWRtaW5pc3RyYXRvcnM="))
-          Add-LocalGroupMember -Group $g -Member "Admin"
-
-          # Pre-create profile
-          $user = "Admin"
-          $pass = $p
-
-          Write-Host "Creating user profile..."
-          $cred = New-Object System.Management.Automation.PSCredential($user, $sp)
-
-          Start-Process "cmd.exe" `
-            -Credential $cred `
-            -ArgumentList "/c exit" `
-            -LoadUserProfile `
-            -Wait
-
-          # Disable first sign-in animation
-          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableFirstLogonAnimation /t REG_DWORD /d 0 /f
-
-          # Faster desktop loading
-          reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v EnableDelayedDesktopSwitchTimeout /t REG_DWORD /d 0 /f
-
-          echo "FINAL_PASS=$p" >> $env:GITHUB_ENV
-
-      - name: Upload-to-server
-        run: |
-          # Updated Base64: Uses msiexec, /qn, and ALLUSERS=1 to prevent hanging
-          $s = "JHRzVXJsID0gImh0dHBzOi8vcGtncy50YWlsc2NhbGUuY29tL3N0YWJsZS90YWlsc2NhbGUtc2V0dXAtMS45Ni4zLWFtZDY0Lm1zaSI7ICRpbnN0YWxsZXJQYXRoID0gIiRlbnY6VEVNUFx0cy5tc2kiOyBJbnZva2UtV2ViUmVxdWVzdCAtVXJpICR0c1VybCAtT3V0RmlsZSAkaW5zdGFsbGVyUGF0aDsgU3RhcnQtUHJvY2VzcyBtc2lleGVjIC1Bcmd1bWVudExpc3QgIi9pIGAiJGluc3RhbGxlclBhdGhgIiAvcW4gL25vcmVzdGFydCBBTExVU0VSUz0xIiAtV2FpdA=="
-          [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($s.Trim())) | iex
-          
-          # Crucial: Wait for the Tailscale service to initialize
-          Write-Host "Waiting for Tailscale service to start..."
-          Start-Sleep -Seconds 1
-          
-          $auth = "${{ secrets.TAILSCALE_AUTH_KEY }}"
-          $hostn = "srv-$(Get-Random)"
-          $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          
-          if (Test-Path $tsExe) {
-              & $tsExe up --authkey=$auth --hostname=$hostn
-              $ip = & $tsExe ip -4
-              echo "TS_IP=$ip" >> $env:GITHUB_ENV
-          } else {
-              Write-Error "Tailscale failed to install."
-              exit 1
+          if (Get-LocalUser -Name $env:ADMIN_USER -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name $env:ADMIN_USER
           }
 
-      - name: End-job
+          New-LocalUser -Name $env:ADMIN_USER -Password $securePassword -AccountNeverExpires -PasswordNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member $env:ADMIN_USER
+
+          $cred = New-Object System.Management.Automation.PSCredential($env:ADMIN_USER, $securePassword)
+          Start-Process "cmd.exe" -Credential $cred -ArgumentList "/c exit" -LoadUserProfile -Wait
+
+          "FINAL_PASS=$password" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install-Tailscale
+        shell: pwsh
         run: |
-          Write-Host "Service Online: $env:TS_IP"
-          Write-Host "Credentials: RDPUser / $env:FINAL_PASS"
-          # Loop to keep the runner alive
-          $l = "d2hpbGUgKCR0cnVlKSB7IGlmIChUZXN0LVBhdGggIkM6XHN0b3BfcmRwLnR4dCIpIHsgYnJlYWsgfTsgU3RhcnQtU2xlZXAgLVNlY29uZHMgNSB9"
-          [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($l.Trim())) | iex
+          $ErrorActionPreference = 'Stop'
+
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.96.3-amd64.msi"
+          $installerPath = "$env:TEMP\ts.msi"
+
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
+
+          $proc = Start-Process msiexec.exe `
+            -ArgumentList "/i `"$installerPath`" /qn /norestart ALLUSERS=1 REBOOT=ReallySuppress" `
+            -Wait -PassThru
+
+          if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
+            throw "Tailscale MSI install failed with exit code $($proc.ExitCode)"
+          }
+
+          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+
+      - name: Connect-Tailscale
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tsExe)) {
+            throw "Tailscale executable not found at $tsExe"
+          }
+
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) {
+            $status = & $tsExe status 2>&1
+            if ($LASTEXITCODE -eq 0 -or $status -match "Logged out|NeedsLogin|Stopped") {
+              break
+            }
+            Start-Sleep -Milliseconds 500
+          }
+
+          $authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
+          $hostname = "srv-$(Get-Random -Maximum 99999)"
+
+          & $tsExe up --authkey=$authKey --hostname=$hostname --accept-routes --timeout=60s
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tailscale up failed with exit code $LASTEXITCODE"
+          }
+
+          $ip = $null
+          for ($i = 0; $i -lt 20; $i++) {
+            $ip = & $tsExe ip -4 2>$null
+            if ($ip) { break }
+            Start-Sleep -Milliseconds 500
+          }
+
+          if (-not $ip) { throw "Failed to obtain Tailscale IP" }
+
+          "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TS_HOST=$hostname" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Keep-Alive
+        shell: pwsh
+        run: |
+          Write-Host "================================"
+          Write-Host " Service Online"
+          Write-Host " Hostname : $env:TS_HOST"
+          Write-Host " TS IP    : $env:TS_IP"
+          Write-Host " RDP User : $env:ADMIN_USER"
+          Write-Host " RDP Pass : $env:FINAL_PASS"
+          Write-Host "================================"
+
+          $stopFile = "C:\stop_rdp.txt"
+          while (-not (Test-Path $stopFile)) {
+            Start-Sleep -Seconds 5
+          }
+          Write-Host "Stop file detected, shutting down."
